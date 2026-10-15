@@ -46,8 +46,9 @@ main{flex:1;display:flex;flex-direction:column;min-height:0}
 <script>
 /* ================= PENGATURAN ================= */
 const CONFIG = {
-  JAM_TAMPIL: 12,         // hanya hotspot dalam X jam terakhir yang ditampilkan
-  ORORA_JAM: 12,          // titik OroraTech (sheet ORORA) ditampilkan sampai X jam ke belakang
+  JAM_TAMPIL: 24,         // hanya hotspot dalam X jam terakhir yang ditampilkan
+  BUFFER_KM: 2,           // hotspot di luar batas konsesi tetap ditampilkan jika jaraknya <= nilai ini (km). 0 = hanya di dalam batas
+  ORORA_JAM: 24,          // titik OroraTech (sheet ORORA) ditampilkan sampai X jam ke belakang
   KLASTER_METER: 1000,    // titik yang jaraknya <= nilai ini digabung jadi satu klaster
   SEMBUNYIKAN_LOW: false, // true = sembunyikan hotspot confidence rendah
   // Alamat web app Apps Script (berakhiran /exec). Hotspot FIRMS dan titik OroraTech diambil lewat sini; kunci FIRMS tersimpan di server. Kosong = mode demo
@@ -76,6 +77,19 @@ const lay=L.layerGroup().addTo(map);
 /* ---------- Geometri ---------- */
 function inside(lon,lat,poly){let c=false;for(let i=0,j=poly.length-1;i<poly.length;j=i++){const[xi,yi]=poly[i],[xj,yj]=poly[j];if((yi>lat)!==(yj>lat)&&lon<(xj-xi)*(lat-yi)/(yj-yi)+xi)c=!c}return c}
 const distrikDari=(lon,lat)=>CONFIG.DISTRIK.find(d=>d.rings.some(r=>inside(lon,lat,r)));
+/* Jarak (meter) titik ke batas konsesi terdekat; 0 jika berada di dalam */
+function jarakKePoligon(lon,lat){
+  let best=Infinity,kode=null;const k=Math.cos(lat*Math.PI/180)*111320;
+  for(const d of CONFIG.DISTRIK)for(const r of d.rings){
+    if(inside(lon,lat,r))return {m:0,kode:d.kode};
+    for(let i=0,j=r.length-1;i<r.length;j=i++){
+      const ax=(r[j][0]-lon)*k,ay=(r[j][1]-lat)*110574,bx=(r[i][0]-lon)*k,by=(r[i][1]-lat)*110574;
+      const dx=bx-ax,dy=by-ay,l2=dx*dx+dy*dy;let u=l2?-(ax*dx+ay*dy)/l2:0;u=Math.max(0,Math.min(1,u));
+      const dd=Math.hypot(ax+u*dx,ay+u*dy);if(dd<best){best=dd;kode=d.kode}
+    }
+  }
+  return {m:best,kode};
+}
 function jarak(a,b){const R=6371000,t=Math.PI/180,dl=(b.lat-a.lat)*t,dn=(b.lon-a.lon)*t;
   const x=Math.sin(dl/2)**2+Math.cos(a.lat*t)*Math.cos(b.lat*t)*Math.sin(dn/2)**2;return 2*R*Math.asin(Math.sqrt(x))}
 const allPts=CONFIG.DISTRIK.flatMap(d=>d.rings.flat());
@@ -128,6 +142,8 @@ async function ambilOrora(){
 }
 
 /* ---------- Klaster ---------- */
+function kodeUmum(m){const c={};m.forEach(x=>{if(x.kode)c[x.kode]=(c[x.kode]||0)+1});return Object.keys(c).sort((a,b)=>c[b]-c[a])[0]||'-'}
+const judul=c=>`${c.n} titik | ${c.kode}${c.luar?' (luar batas ±'+c.jarakKm+' km)':''}`;
 function buatKlaster(pts){
   const p=pts.map((_,i)=>i),f=i=>p[i]===i?i:(p[i]=f(p[i]));
   for(let i=0;i<pts.length;i++)for(let j=i+1;j<pts.length;j++)if(jarak(pts[i],pts[j])<=CONFIG.KLASTER_METER)p[f(j)]=f(i);
@@ -135,7 +151,7 @@ function buatKlaster(pts){
   return Object.values(g).map(m=>{
     const lat=m.reduce((a,x)=>a+x.lat,0)/m.length,lon=m.reduce((a,x)=>a+x.lon,0)/m.length;
     const t=m.map(x=>+x.time);
-    return {m,lat,lon,n:m.length,orora:m.some(x=>x.orora),tMin:Math.min(...t),tMax:Math.max(...t),kode:(distrikDari(lon,lat)||distrikDari(m[0].lon,m[0].lat)||{kode:'-'}).kode,
+    return {m,lat,lon,n:m.length,orora:m.some(x=>x.orora),tMin:Math.min(...t),tMax:Math.max(...t),kode:kodeUmum(m),luar:m.every(x=>x.luar),jarakKm:(Math.min(...m.map(x=>x.dm||0))/1000).toFixed(1),
       sats:[...new Set(m.map(x=>SAT[x.sat]||'demo'))]};
   }).sort((a,b)=>b.tMax-a.tMax);
 }
@@ -165,7 +181,7 @@ function banding(c){
 }
 function popup(c){
   const gm=`https://www.google.com/maps?q=${c.lat},${c.lon}`,nav=`https://www.google.com/maps/dir/?api=1&destination=${c.lat},${c.lon}`,b=banding(c);
-  return `<div class="pop"><h3>${c.n} titik | ${c.kode}</h3>
+  return `<div class="pop"><h3>${judul(c)}</h3>
     <div>${umur(c.tMax)}${saya?' | '+jrk(c):''}</div>
     ${b?'<div style="color:#7b1fa2;font-weight:600">'+b+'</div>':''}
     <div class="k">Pusat: ${koor(c)}</div>
@@ -179,7 +195,7 @@ function gambar(){
     c.marker=L.marker([c.lat,c.lon],{icon:L.divIcon({className:'',iconSize:[s,s],iconAnchor:[s/2,s/2],html:`<div class="cl" style="width:${s}px;height:${s}px;background:${w};border-color:${c.orora?'#c040ff':'#fff'}">${c.n}</div>`})}).bindPopup(()=>popup(c),{maxWidth:340}).addTo(lay);
     c.m.forEach(x=>L.circleMarker([x.lat,x.lon],{radius:4,color:'#fff',weight:1,fillColor:x.orora?'#c040ff':w,fillOpacity:1}).on('click',()=>c.marker.openPopup()).addTo(lay));
   });
-  $('list').innerHTML=klaster.length?klaster.map((c,i)=>`<div class="it" data-i="${i}"><div class="dot" style="background:${warna(c)}"></div><div><b>${c.n} titik | ${c.kode}</b><span>${koor(c)}</span><span>${umur(c.tMax)} ${saya?' | '+jrk(c):''}</span>${banding(c)?'<span style="color:#d98cff">'+banding(c)+'</span>':''}</div></div>`).join(''):'<div class="empty">Tidak ada hotspot dalam '+CONFIG.JAM_TAMPIL+' jam terakhir di dalam area.</div>';
+  $('list').innerHTML=klaster.length?klaster.map((c,i)=>`<div class="it" data-i="${i}"><div class="dot" style="background:${warna(c)}"></div><div><b>${judul(c)}</b><span>${koor(c)}</span><span>${umur(c.tMax)} ${saya?' | '+jrk(c):''}</span>${banding(c)?'<span style="color:#d98cff">'+banding(c)+'</span>':''}</div></div>`).join(''):'<div class="empty">Tidak ada hotspot dalam '+CONFIG.JAM_TAMPIL+' jam terakhir di dalam atau sekitar area (±'+CONFIG.BUFFER_KM+' km).</div>';
 }
 $('list').addEventListener('click',e=>{const it=e.target.closest('.it');if(!it)return;const c=klaster[+it.dataset.i];map.setView([c.lat,c.lon],Math.max(map.getZoom(),14));c.marker.openPopup()});
 
@@ -188,15 +204,16 @@ async function muat(){
   try{
     const [{pts,gagal},oro]=await Promise.all([ambil(),ambilOrora().catch(()=>null)]),now=Date.now();
     const maks=Math.max(CONFIG.JAM_TAMPIL,CONFIG.ORORA_JAM)*36e5;
-    const p=pts.filter(x=>now-x.time<=maks&&!(CONFIG.SEMBUNYIKAN_LOW&&x.conf==='l')).filter(x=>distrikDari(x.lon,x.lat))
-      .concat((oro||[]).filter(x=>now-x.time<=CONFIG.ORORA_JAM*36e5));
+    const tandai=(x,batas)=>{const r=jarakKePoligon(x.lon,x.lat);x.dm=r.m;x.luar=r.m>0;x.kode=r.m<=batas?r.kode:null;return x};
+    const firms=pts.filter(x=>now-x.time<=maks&&!(CONFIG.SEMBUNYIKAN_LOW&&x.conf==='l')).map(x=>tandai(x,CONFIG.BUFFER_KM*1000)).filter(x=>x.dm<=CONFIG.BUFFER_KM*1000);
+    const p=firms.concat((oro||[]).filter(x=>now-x.time<=CONFIG.ORORA_JAM*36e5).map(x=>{const r=jarakKePoligon(x.lon,x.lat);x.dm=r.m;x.luar=r.m>0;x.kode=r.kode;return x}));
     klaster=buatKlaster(p).filter(c=>c.orora||now-c.tMax<=CONFIG.JAM_TAMPIL*36e5);
     const jmlTitik=klaster.reduce((a,c)=>a+c.n,0);
     klaster.forEach((c,i)=>c.id=i);
     gambar();
-    $('ket').textContent=`v8 | ${klaster.length} klaster | ${jmlTitik} titik | ${new Date().toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'})}`+(CONFIG.API_URL?'':' | DEMO')+(gagal.length?' | sumber gagal: '+gagal.length:'')+(CONFIG.API_URL?(oro===null?' | OroraTech gagal dimuat':' | OroraTech: '+oro.length+' titik'):'');
+    $('ket').textContent=`v9 | ${klaster.length} klaster | ${jmlTitik} titik | FIRMS ${pts.length} diterima, ${firms.length} di area | ${new Date().toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'})}`+(CONFIG.API_URL?'':' | DEMO')+(gagal.length?' | sumber gagal: '+gagal.length:'')+(CONFIG.API_URL?(oro===null?' | OroraTech gagal dimuat':' | OroraTech: '+oro.length+' titik'):'');
   }catch(e){
-    $('ket').textContent='v8 | Gagal memuat: '+e.message+' ';
+    $('ket').textContent='v9 | Gagal memuat: '+e.message+' ';
     if(CONFIG.API_URL){const l=document.createElement('a');l.href=CONFIG.API_URL+'?aksi=hotspot';l.target='_blank';l.textContent='[uji alamat]';l.style.color='#8ab4f8';$('ket').appendChild(l)}
   }
 }
