@@ -92,7 +92,7 @@ function demo(){
 }
 async function ambil(){
   if(!CONFIG.API_URL)return demo();
-  const d=await jsonp(CONFIG.API_URL+'?aksi=hotspot',45000);
+  const d=await ambilApi(CONFIG.API_URL+'?aksi=hotspot',45000);
   if(d.err)throw new Error(d.err);
   const seen=new Set();
   const pts=(d.pts||[]).map(r=>{let c=String(r[3]).toLowerCase();if(/^\d+$/.test(c)){const n=+c;c=n<30?'l':n<80?'n':'h'}
@@ -111,9 +111,19 @@ function jsonp(url,ms){
     s.src=url+(url.includes('?')?'&':'?')+'callback='+cb;document.head.appendChild(s);
   });
 }
+/* Dua jalur: tag skrip (JSONP) lebih dulu, lalu fetch biasa sebagai cadangan (sebagian peramban HP memblokir salah satunya) */
+async function ambilApi(url,ms){
+  try{return await jsonp(url,ms)}
+  catch(e1){
+    try{
+      const r=await fetch(url,{cache:'no-store',credentials:'omit'});
+      return JSON.parse(await r.text());
+    }catch(e2){throw new Error(e1.message+' | fetch: '+(e2.message||e2))}
+  }
+}
 async function ambilOrora(){
   if(!CONFIG.API_URL)return [];
-  const d=await jsonp(CONFIG.API_URL);
+  const d=await ambilApi(CONFIG.API_URL);
   return (d.orora||[]).map(o=>({lat:+o.lat,lon:+o.lon,time:new Date(o.t),cat:o.cat||'',conf:'h',sat:'ORORA',frp:0,orora:true}));
 }
 
@@ -184,9 +194,9 @@ async function muat(){
     const jmlTitik=klaster.reduce((a,c)=>a+c.n,0);
     klaster.forEach((c,i)=>c.id=i);
     gambar();
-    $('ket').textContent=`v7 | ${klaster.length} klaster | ${jmlTitik} titik | ${new Date().toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'})}`+(CONFIG.API_URL?'':' | DEMO')+(gagal.length?' | sumber gagal: '+gagal.length:'')+(CONFIG.API_URL?(oro===null?' | OroraTech gagal dimuat':' | OroraTech: '+oro.length+' titik'):'');
+    $('ket').textContent=`v8 | ${klaster.length} klaster | ${jmlTitik} titik | ${new Date().toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'})}`+(CONFIG.API_URL?'':' | DEMO')+(gagal.length?' | sumber gagal: '+gagal.length:'')+(CONFIG.API_URL?(oro===null?' | OroraTech gagal dimuat':' | OroraTech: '+oro.length+' titik'):'');
   }catch(e){
-    $('ket').textContent='v7 | Gagal memuat: '+e.message+' ';
+    $('ket').textContent='v8 | Gagal memuat: '+e.message+' ';
     if(CONFIG.API_URL){const l=document.createElement('a');l.href=CONFIG.API_URL+'?aksi=hotspot';l.target='_blank';l.textContent='[uji alamat]';l.style.color='#8ab4f8';$('ket').appendChild(l)}
   }
 }
